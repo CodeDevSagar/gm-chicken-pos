@@ -9,16 +9,16 @@ import {
     FiArrowRight, FiEdit2, FiTrash2, FiX, FiCheckCircle, FiClock
 } from 'react-icons/fi';
 
-// --- NEW IMPORTS FOR OFFLINE ---
 import { AppwriteConfig } from '../appwrite/config';
-import { saveRecord, syncOfflineData } from "../utils/OfflineManager";
+// IMPORT getCombinedData HERE
+import { saveRecord, syncOfflineData, getCombinedData } from "../utils/OfflineManager";
 
 const ManageStock = () => {
   const navigate = useNavigate();
   const { settings } = useSettings();
   
   // --- GET CONTEXT FUNCTIONS ---
-  const { purchases, addPurchase, updatePurchase, deletePurchase, isLoading } = usePurchases();
+  const { purchases, updatePurchase, deletePurchase, isLoading } = usePurchases();
 
   const [activeTab, setActiveTab] = useState('stock'); // 'stock' or 'salary'
   
@@ -27,12 +27,10 @@ const ManageStock = () => {
   
   // --- FORMS STATE ---
   const [stockForm, setStockForm] = useState({ productId: '', weight: '', costPerKg: '' });
-  
-  // Salary Form + Editing State
   const [salaryForm, setSalaryForm] = useState({ employeeName: '', amount: '', note: '' });
-  const [editingSalaryId, setEditingSalaryId] = useState(null); // Track ID if editing
+  const [editingSalaryId, setEditingSalaryId] = useState(null); 
 
-  // Auto-select first product for stock
+  // Auto-select first product
   useEffect(() => {
     if (productList.length > 0 && !stockForm.productId) {
         setStockForm(prev => ({ ...prev, productId: productList[0].id }));
@@ -41,18 +39,35 @@ const ManageStock = () => {
 
   // --- SYNC EFFECT ---
   useEffect(() => {
-    // Try to sync when component loads
     syncOfflineData();
-
-    // Listen for internet connection coming back
     const handleOnline = () => {
         toast.info("Back Online! Syncing data...");
         syncOfflineData();
     };
-    
     window.addEventListener('online', handleOnline);
     return () => window.removeEventListener('online', handleOnline);
   }, []);
+
+  // --- FIX: COMBINE ONLINE + OFFLINE DATA ---
+  // Ye line data ko merge karegi taaki count turant dikhe
+  const allPurchases = useMemo(() => {
+      const merged = getCombinedData(purchases, 'purchases');
+      // Sort by date (Newest First)
+      return merged.sort((a, b) => new Date(b.purchaseDate) - new Date(a.purchaseDate));
+  }, [purchases]);
+
+  // --- FILTER LISTS (Using allPurchases instead of purchases) ---
+  const stockHistory = useMemo(() => 
+      allPurchases.filter(p => p.type === 'stock'), 
+  [allPurchases]);
+
+  const salaryHistory = useMemo(() => 
+      allPurchases.filter(p => p.type === 'salary'), 
+  [allPurchases]);
+
+  // --- CALCULATE TOTALS ---
+  const totalStockInvestment = stockHistory.reduce((acc, p) => acc + (Number(p.totalCost) || 0), 0);
+  const totalSalaryPaid = salaryHistory.reduce((acc, p) => acc + (Number(p.totalCost) || 0), 0);
 
   // --- STOCK HANDLER ---
   const handleStockSubmit = async (e) => {
@@ -80,11 +95,11 @@ const ManageStock = () => {
     };
 
     try {
-        // Use the Offline Manager to save
         await saveRecord(AppwriteConfig.purchasesCollectionId, newEntry);
-        
         setStockForm({ ...stockForm, weight: '', costPerKg: '' });
         
+        // Force refresh is handled by OfflineManager + Context logic usually, 
+        // but local state update happens via 'allPurchases' memo automatically.
         const isOffline = !navigator.onLine;
         toast.success(`Stock Added ${isOffline ? '(Offline Mode)' : ''}`);
     } catch (error) {
@@ -93,7 +108,7 @@ const ManageStock = () => {
     }
   };
 
-  // --- SALARY HANDLERS (Add & Update) ---
+  // --- SALARY HANDLERS ---
   const handleSalarySubmit = async (e) => {
     e.preventDefault();
     const amt = parseFloat(salaryForm.amount);
@@ -115,33 +130,25 @@ const ManageStock = () => {
 
     try {
         if (editingSalaryId) {
-            // --- UPDATE MODE ---
-            // We restrict editing to ONLINE ONLY because syncing edits is complex
             if (!navigator.onLine) {
                 toast.error("Cannot edit records while offline.");
                 return;
             }
-
             await updatePurchase(editingSalaryId, salaryData);
-            toast.success(`Salary record updated for ${salaryData.employeeName}`);
+            toast.success(`Salary updated.`);
             cancelEdit();
         } else {
-            // --- ADD MODE ---
-            // Use Offline Manager for adding new records
             await saveRecord(AppwriteConfig.purchasesCollectionId, salaryData);
-            
             setSalaryForm({ employeeName: '', amount: '', note: '' });
-            
             const isOffline = !navigator.onLine;
             toast.success(`Salary Recorded ${isOffline ? '(Offline Mode)' : ''}`);
         }
     } catch (error) {
         console.error(error);
-        toast.error("Failed to save salary record.");
+        toast.error("Failed to save salary.");
     }
   };
 
-  // Prepare Edit
   const handleEditClick = (record) => {
       setEditingSalaryId(record.$id);
       setSalaryForm({
@@ -149,40 +156,26 @@ const ManageStock = () => {
           amount: record.totalCost,
           note: record.note || ''
       });
-      // Scroll to form on mobile
       window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // Cancel Edit
   const cancelEdit = () => {
       setEditingSalaryId(null);
       setSalaryForm({ employeeName: '', amount: '', note: '' });
   };
 
-  // Delete Handler
   const handleDeleteClick = async (id) => {
-      if (!navigator.onLine) {
-          return toast.error("Cannot delete records while offline.");
-      }
-
-      if (window.confirm("Are you sure you want to delete this salary record?")) {
+      if (!navigator.onLine) return toast.error("Cannot delete while offline.");
+      if (window.confirm("Delete this record?")) {
           try {
               await deletePurchase(id);
-              toast.success("Record deleted successfully.");
+              toast.success("Deleted.");
               if (editingSalaryId === id) cancelEdit();
           } catch (error) {
-              console.error(error);
-              toast.error("Failed to delete record.");
+              toast.error("Failed to delete.");
           }
       }
   };
-
-  // --- FILTER LISTS ---
-  const stockHistory = purchases.filter(p => p.type !== 'salary');
-  const salaryHistory = purchases.filter(p => p.type === 'salary');
-
-  const totalStockInvestment = stockHistory.reduce((acc, p) => acc + (p.totalCost || 0), 0);
-  const totalSalaryPaid = salaryHistory.reduce((acc, p) => acc + (p.totalCost || 0), 0);
 
   return (
     <div className="min-h-screen bg-slate-900 text-white p-4 md:p-8 pb-24 font-sans">
@@ -195,7 +188,7 @@ const ManageStock = () => {
         <p className="text-slate-400">Track your inventory purchases and employee payrolls.</p>
       </div>
 
-      {/* Tabs Switcher */}
+      {/* Tabs */}
       <div className="max-w-7xl mx-auto mb-8 flex justify-center md:justify-start">
           <div className="bg-slate-800 p-1 rounded-xl inline-flex shadow-lg border border-slate-700">
               <button 
@@ -215,11 +208,9 @@ const ManageStock = () => {
 
       <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8">
         
-        {/* --- LEFT COLUMN: ENTRY FORM --- */}
+        {/* LEFT COLUMN: ENTRY FORM */}
         <div className="lg:col-span-1 space-y-6">
-          
           <div className="bg-slate-800/50 backdrop-blur-xl border border-slate-700/50 rounded-2xl p-6 shadow-xl relative overflow-hidden transition-all duration-300">
-             {/* Background Glow */}
              <div className={`absolute top-0 right-0 w-32 h-32 rounded-full blur-3xl -mr-10 -mt-10 pointer-events-none opacity-20 ${activeTab === 'stock' ? 'bg-indigo-500' : 'bg-emerald-500'}`}></div>
 
              <div className="flex justify-between items-center mb-6 relative z-10">
@@ -227,7 +218,6 @@ const ManageStock = () => {
                     {activeTab === 'stock' ? <FiShoppingBag className="text-indigo-400"/> : <FiUsers className="text-emerald-400"/>}
                     {activeTab === 'stock' ? 'New Stock Entry' : (editingSalaryId ? 'Edit Salary Record' : 'Record Salary Payment')}
                 </h2>
-                {/* Cancel Edit Button */}
                 {editingSalaryId && activeTab === 'salary' && (
                     <button onClick={cancelEdit} className="text-xs text-rose-400 hover:text-rose-300 flex items-center gap-1 bg-rose-500/10 px-2 py-1 rounded">
                         <FiX /> Cancel
@@ -236,7 +226,6 @@ const ManageStock = () => {
              </div>
 
              {activeTab === 'stock' ? (
-                 /* STOCK FORM */
                  <>
                  {productList.length === 0 ? (
                     <div className="text-center py-6 relative z-10">
@@ -274,7 +263,6 @@ const ManageStock = () => {
                  )}
                  </>
              ) : (
-                 /* SALARY FORM */
                  <form onSubmit={handleSalarySubmit} className="space-y-4 relative z-10">
                     <div>
                         <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 block">Employee Name</label>
@@ -310,7 +298,6 @@ const ManageStock = () => {
                         />
                     </div>
                     
-                    {/* Dynamic Submit Button */}
                     <button type="submit" className={`w-full font-bold py-3.5 rounded-xl shadow-lg transition-all transform active:scale-95 flex items-center justify-center gap-2 ${editingSalaryId ? 'bg-amber-600 hover:bg-amber-500 shadow-amber-600/20' : 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-600/20'}`}>
                         {editingSalaryId ? <><FiCheckCircle /> Update Payment</> : <><FiDollarSign /> Record Payment</>}
                     </button>
@@ -334,7 +321,7 @@ const ManageStock = () => {
           </div>
         </div>
 
-        {/* --- RIGHT COLUMN: HISTORY LIST --- */}
+        {/* RIGHT COLUMN: HISTORY LIST */}
         <div className="lg:col-span-2 bg-slate-800/50 backdrop-blur-xl border border-slate-700/50 rounded-2xl p-6 shadow-xl flex flex-col h-full min-h-[500px]">
           <h2 className="text-lg font-semibold text-white mb-6 flex items-center gap-2 pb-4 border-b border-slate-700/50">
             <FiClock className="text-slate-400" /> Recent History
@@ -367,6 +354,9 @@ const ManageStock = () => {
                                 </p>
                                 <div className="flex items-center gap-2 text-xs text-slate-400 mt-1">
                                     <span>{new Date(p.purchaseDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                                    {p.isOffline && (
+                                        <span className="text-[10px] bg-orange-500/20 text-orange-300 px-1 rounded border border-orange-500/30">Offline</span>
+                                    )}
                                     {p.note && (
                                         <>
                                             <span className="w-1 h-1 bg-slate-500 rounded-full"></span>
@@ -381,7 +371,7 @@ const ManageStock = () => {
                         <div className="flex items-center gap-6 w-full sm:w-auto justify-between sm:justify-end">
                             <div className="text-right">
                                 <p className={`font-bold text-lg ${activeTab === 'stock' ? 'text-indigo-400' : 'text-emerald-400'}`}>
-                                    ₹{(p.totalCost || 0).toFixed(2)}
+                                    ₹{(Number(p.totalCost) || 0).toFixed(2)}
                                 </p>
                                 {activeTab === 'stock' && (
                                     <p className="text-xs text-slate-500 font-mono">
@@ -390,13 +380,14 @@ const ManageStock = () => {
                                 )}
                             </div>
 
-                            {/* Edit/Delete Buttons (Only for Salary for now as requested) */}
+                            {/* Edit/Delete Buttons */}
                             {activeTab === 'salary' && (
                                 <div className="flex items-center gap-2 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity">
                                     <button 
                                         onClick={() => handleEditClick(p)} 
                                         className="p-2 bg-slate-800 hover:bg-indigo-600 text-slate-400 hover:text-white rounded-lg transition-colors shadow-sm"
                                         title="Edit"
+                                        disabled={p.isOffline} 
                                     >
                                         <FiEdit2 size={16} />
                                     </button>
@@ -404,6 +395,7 @@ const ManageStock = () => {
                                         onClick={() => handleDeleteClick(p.$id)} 
                                         className="p-2 bg-slate-800 hover:bg-rose-600 text-slate-400 hover:text-white rounded-lg transition-colors shadow-sm"
                                         title="Delete"
+                                        disabled={p.isOffline}
                                     >
                                         <FiTrash2 size={16} />
                                     </button>
