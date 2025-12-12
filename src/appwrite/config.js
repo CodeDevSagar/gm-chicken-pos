@@ -13,7 +13,7 @@ export const AppwriteConfig = {
     userCollectionId: 'users',
     productCollectionId: 'products',
     salesCollectionId: 'sales',
-    purchaseCollectionId: 'purchases',
+    purchasesCollectionId: 'purchases',
     settingsCollectionId: 'settings',
     storageBucketId: '691dfbe7000795afada1' // For shop logos
 };
