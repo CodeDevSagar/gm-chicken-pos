@@ -30,6 +30,9 @@ const ManageStock = () => {
   const [salaryForm, setSalaryForm] = useState({ employeeName: '', amount: '', note: '' });
   const [editingSalaryId, setEditingSalaryId] = useState(null); 
 
+  // --- NEW: Refresh Trigger (To show offline data immediately) ---
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+
   // Auto-select first product
   useEffect(() => {
     if (productList.length > 0 && !stockForm.productId) {
@@ -39,24 +42,36 @@ const ManageStock = () => {
 
   // --- SYNC EFFECT ---
   useEffect(() => {
+    // 1. Load pending data
     syncOfflineData();
+    
+    // 2. Listen for Internet
     const handleOnline = () => {
         toast.info("Back Online! Syncing data...");
-        syncOfflineData();
+        syncOfflineData().then(() => {
+            // Sync complete hone ke baad list refresh karein
+            setRefreshTrigger(prev => prev + 1);
+        });
     };
     window.addEventListener('online', handleOnline);
     return () => window.removeEventListener('online', handleOnline);
   }, []);
 
-  // --- FIX: COMBINE ONLINE + OFFLINE DATA ---
-  // Ye line data ko merge karegi taaki count turant dikhe
+  // --- MAIN FIX: COMBINE ONLINE + OFFLINE DATA ---
+  // Isme humne 'refreshTrigger' add kiya hai dependency me
   const allPurchases = useMemo(() => {
+      // 1. LocalStorage se aur Appwrite se data merge karo
       const merged = getCombinedData(purchases, 'purchases');
-      // Sort by date (Newest First)
-      return merged.sort((a, b) => new Date(b.purchaseDate) - new Date(a.purchaseDate));
-  }, [purchases]);
+      
+      // 2. Sort by date (Newest First)
+      return merged.sort((a, b) => {
+          const dateA = new Date(a.purchaseDate || a.$createdAt);
+          const dateB = new Date(b.purchaseDate || b.$createdAt);
+          return dateB - dateA;
+      });
+  }, [purchases, refreshTrigger]); // <--- Yeh refreshTrigger zaroori hai
 
-  // --- FILTER LISTS (Using allPurchases instead of purchases) ---
+  // --- FILTER LISTS (Using allPurchases) ---
   const stockHistory = useMemo(() => 
       allPurchases.filter(p => p.type === 'stock'), 
   [allPurchases]);
@@ -98,8 +113,9 @@ const ManageStock = () => {
         await saveRecord(AppwriteConfig.purchasesCollectionId, newEntry);
         setStockForm({ ...stockForm, weight: '', costPerKg: '' });
         
-        // Force refresh is handled by OfflineManager + Context logic usually, 
-        // but local state update happens via 'allPurchases' memo automatically.
+        // UPDATE UI IMMEDIATELY
+        setRefreshTrigger(prev => prev + 1);
+        
         const isOffline = !navigator.onLine;
         toast.success(`Stock Added ${isOffline ? '(Offline Mode)' : ''}`);
     } catch (error) {
@@ -138,8 +154,13 @@ const ManageStock = () => {
             toast.success(`Salary updated.`);
             cancelEdit();
         } else {
+            // Save (Offline or Online)
             await saveRecord(AppwriteConfig.purchasesCollectionId, salaryData);
             setSalaryForm({ employeeName: '', amount: '', note: '' });
+            
+            // UPDATE UI IMMEDIATELY
+            setRefreshTrigger(prev => prev + 1);
+
             const isOffline = !navigator.onLine;
             toast.success(`Salary Recorded ${isOffline ? '(Offline Mode)' : ''}`);
         }
@@ -171,6 +192,8 @@ const ManageStock = () => {
               await deletePurchase(id);
               toast.success("Deleted.");
               if (editingSalaryId === id) cancelEdit();
+              // Refresh to remove item
+              setRefreshTrigger(prev => prev + 1); 
           } catch (error) {
               toast.error("Failed to delete.");
           }
@@ -353,7 +376,7 @@ const ManageStock = () => {
                                     {activeTab === 'stock' ? (p.productName || "Unknown Product") : (p.employeeName || "Employee")}
                                 </p>
                                 <div className="flex items-center gap-2 text-xs text-slate-400 mt-1">
-                                    <span>{new Date(p.purchaseDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                                    <span>{new Date(p.purchaseDate || p.$createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
                                     {p.isOffline && (
                                         <span className="text-[10px] bg-orange-500/20 text-orange-300 px-1 rounded border border-orange-500/30">Offline</span>
                                     )}
