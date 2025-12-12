@@ -10,7 +10,6 @@ import {
 } from 'react-icons/fi';
 
 import { AppwriteConfig } from '../appwrite/config';
-// IMPORT getCombinedData HERE
 import { saveRecord, syncOfflineData, getCombinedData } from "../utils/OfflineManager";
 
 const ManageStock = () => {
@@ -20,17 +19,14 @@ const ManageStock = () => {
   // --- GET CONTEXT FUNCTIONS ---
   const { purchases, updatePurchase, deletePurchase, isLoading } = usePurchases();
 
-  const [activeTab, setActiveTab] = useState('stock'); // 'stock' or 'salary'
-  
-  // Product List for Stock
-  const productList = useMemo(() => Object.values(settings.products || {}), [settings.products]);
-  
-  // --- FORMS STATE ---
+  const [activeTab, setActiveTab] = useState('stock'); 
   const [stockForm, setStockForm] = useState({ productId: '', weight: '', costPerKg: '' });
   const [salaryForm, setSalaryForm] = useState({ employeeName: '', amount: '', note: '' });
   const [editingSalaryId, setEditingSalaryId] = useState(null); 
 
-  // --- NEW: Refresh Trigger (To show offline data immediately) ---
+  // --- LOCAL STATE FOR INSTANT UPDATES ---
+  // Jab online add karein, toh turant dikhane ke liye ye temporary list hai
+  const [tempOnlineItems, setTempOnlineItems] = useState([]);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
   // Auto-select first product
@@ -38,49 +34,52 @@ const ManageStock = () => {
     if (productList.length > 0 && !stockForm.productId) {
         setStockForm(prev => ({ ...prev, productId: productList[0].id }));
     }
-  }, [productList, stockForm.productId]);
+  }, [settings.products]);
 
-  // --- SYNC EFFECT ---
+  const productList = useMemo(() => Object.values(settings.products || {}), [settings.products]);
+
+  // --- SYNC & RELOAD LOGIC (THE FIX) ---
   useEffect(() => {
-    // 1. Load pending data
+    // 1. Check for sync on load
     syncOfflineData();
-    
-    // 2. Listen for Internet
-    const handleOnline = () => {
-        toast.info("Back Online! Syncing data...");
-        syncOfflineData().then(() => {
-            // Sync complete hone ke baad list refresh karein
-            setRefreshTrigger(prev => prev + 1);
-        });
+
+    // 2. Listen for Internet Connection
+    const handleOnline = async () => {
+        toast.info("Connecting to Server...");
+        await syncOfflineData();
+        toast.success("Sync Complete! Refreshing...");
+        
+        // 🔥 MAGIC FIX: Sync hone ke baad page reload karein taaki totals sahi ho jayein
+        setTimeout(() => {
+            window.location.reload();
+        }, 1500);
     };
+
     window.addEventListener('online', handleOnline);
     return () => window.removeEventListener('online', handleOnline);
   }, []);
 
-  // --- MAIN FIX: COMBINE ONLINE + OFFLINE DATA ---
-  // Isme humne 'refreshTrigger' add kiya hai dependency me
+  // --- MERGE ALL DATA (Context + Offline + Temp Online) ---
   const allPurchases = useMemo(() => {
-      // 1. LocalStorage se aur Appwrite se data merge karo
-      const merged = getCombinedData(purchases, 'purchases');
+      // 1. Get Context Data (Server)
+      // 2. Get Offline Data (Local)
+      const offlineAndContext = getCombinedData(purchases, 'purchases');
       
-      // 2. Sort by date (Newest First)
-      return merged.sort((a, b) => {
+      // 3. Merge with Temporary Online Items (Jo abhi add kiye par context me nahi aaye)
+      const finalData = [...tempOnlineItems, ...offlineAndContext];
+
+      // 4. Sort by Date
+      return finalData.sort((a, b) => {
           const dateA = new Date(a.purchaseDate || a.$createdAt);
           const dateB = new Date(b.purchaseDate || b.$createdAt);
           return dateB - dateA;
       });
-  }, [purchases, refreshTrigger]); // <--- Yeh refreshTrigger zaroori hai
-
-  // --- FILTER LISTS (Using allPurchases) ---
-  const stockHistory = useMemo(() => 
-      allPurchases.filter(p => p.type === 'stock'), 
-  [allPurchases]);
-
-  const salaryHistory = useMemo(() => 
-      allPurchases.filter(p => p.type === 'salary'), 
-  [allPurchases]);
+  }, [purchases, refreshTrigger, tempOnlineItems]);
 
   // --- CALCULATE TOTALS ---
+  const stockHistory = allPurchases.filter(p => p.type === 'stock');
+  const salaryHistory = allPurchases.filter(p => p.type === 'salary');
+
   const totalStockInvestment = stockHistory.reduce((acc, p) => acc + (Number(p.totalCost) || 0), 0);
   const totalSalaryPaid = salaryHistory.reduce((acc, p) => acc + (Number(p.totalCost) || 0), 0);
 
@@ -91,8 +90,7 @@ const ManageStock = () => {
     const cost = parseFloat(stockForm.costPerKg);
 
     if (!stockForm.productId || !wt || wt <= 0 || !cost || cost <= 0) {
-        toast.error("Please fill all fields with valid positive numbers.");
-        return;
+        return toast.error("Invalid values.");
     }
 
     const selectedProduct = settings.products[stockForm.productId];
@@ -110,14 +108,23 @@ const ManageStock = () => {
     };
 
     try {
-        await saveRecord(AppwriteConfig.purchasesCollectionId, newEntry);
+        const targetCollectionId = AppwriteConfig.purchasesCollectionId || "purchases";
+        
+        // Save (Online or Offline)
+        const result = await saveRecord(targetCollectionId, newEntry);
+        
+        // Clear Form
         setStockForm({ ...stockForm, weight: '', costPerKg: '' });
+
+        // 🔥 UI UPDATE: Agar Online save hua, to turant list me dikhao
+        if (result.mode === 'online') {
+            setTempOnlineItems(prev => [result.data, ...prev]);
+        } else {
+            // Agar offline hua to OfflineManager handle kar lega via refreshTrigger
+            setRefreshTrigger(prev => prev + 1);
+        }
         
-        // UPDATE UI IMMEDIATELY
-        setRefreshTrigger(prev => prev + 1);
-        
-        const isOffline = !navigator.onLine;
-        toast.success(`Stock Added ${isOffline ? '(Offline Mode)' : ''}`);
+        toast.success(`Stock Added ${result.mode === 'offline' ? '(Offline)' : ''}`);
     } catch (error) {
         console.error(error);
         toast.error("Failed to add stock.");
@@ -130,8 +137,7 @@ const ManageStock = () => {
     const amt = parseFloat(salaryForm.amount);
 
     if (!salaryForm.employeeName.trim() || !amt || amt <= 0) {
-        toast.error("Please enter valid employee name and amount.");
-        return;
+        return toast.error("Invalid details.");
     }
 
     const salaryData = {
@@ -146,24 +152,21 @@ const ManageStock = () => {
 
     try {
         if (editingSalaryId) {
-            if (!navigator.onLine) {
-                toast.error("Cannot edit records while offline.");
-                return;
-            }
-            await updatePurchase(editingSalaryId, salaryData);
-            toast.success(`Salary updated.`);
-            cancelEdit();
-        } else {
-            // Save (Offline or Online)
-            await saveRecord(AppwriteConfig.purchasesCollectionId, salaryData);
-            setSalaryForm({ employeeName: '', amount: '', note: '' });
+            if (!navigator.onLine) return toast.error("Edit needs internet.");
             
-            // UPDATE UI IMMEDIATELY
-            setRefreshTrigger(prev => prev + 1);
+            // Check if item is offline
+            const isOfflineItem = allPurchases.find(p => p.$id === editingSalaryId)?.isOffline;
+            if (isOfflineItem) return toast.warn("Wait for sync before editing.");
 
-            const isOffline = !navigator.onLine;
-            toast.success(`Salary Recorded ${isOffline ? '(Offline Mode)' : ''}`);
-        }
+            try {
+                await updatePurchase(editingSalaryId, salaryData);
+                toast.success(`Salary record updated.`);
+                cancelEdit();
+                setRefreshTrigger(prev => prev + 1);
+            } catch(e) {
+                toast.error("Update failed. Check Permissions.");
+            }
+        } 
     } catch (error) {
         console.error(error);
         toast.error("Failed to save salary.");
@@ -186,16 +189,28 @@ const ManageStock = () => {
   };
 
   const handleDeleteClick = async (id) => {
-      if (!navigator.onLine) return toast.error("Cannot delete while offline.");
-      if (window.confirm("Delete this record?")) {
+      // 1. Check Internet
+      if (!navigator.onLine) return toast.error("Delete requires internet connection.");
+
+      // 2. Check if Offline Item (Can't delete until synced)
+      const isOfflineItem = allPurchases.find(p => p.$id === id)?.isOffline;
+      if (isOfflineItem) return toast.warn("Wait for sync to complete before deleting.");
+
+      if (window.confirm("Are you sure you want to delete this record?")) {
           try {
               await deletePurchase(id);
-              toast.success("Deleted.");
+              toast.success("Record deleted successfully.");
+              
               if (editingSalaryId === id) cancelEdit();
-              // Refresh to remove item
+              
+              // Remove from temp list if it exists there
+              setTempOnlineItems(prev => prev.filter(i => i.$id !== id));
+              
+              // Trigger UI refresh
               setRefreshTrigger(prev => prev + 1); 
           } catch (error) {
-              toast.error("Failed to delete.");
+              console.error(error);
+              toast.error("Failed to delete record. Check permissions.");
           }
       }
   };

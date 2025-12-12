@@ -2,26 +2,36 @@
 import { databases, AppwriteConfig, ID } from "../appwrite/config";
 import { toast } from "react-toastify";
 
+
+console.log("OfflineManager Loaded. Config:", AppwriteConfig);
 // Keys for Local Storage
 const OFFLINE_SALES_KEY = "offline_sales_queue";
 const OFFLINE_PURCHASES_KEY = "offline_purchases_queue";
 
 // --- SAVE FUNCTION (Replaces databases.createDocument) ---
 export const saveRecord = async (collectionId, data) => {
+  // Defensive check: ensure collectionId is provided
+  if (!collectionId) {
+    throw new Error("saveRecord requires collectionId parameter");
+  }
+  
+  console.log(`💾 Saving record to collection: ${collectionId}`);
   const isOnline = navigator.onLine;
 
   if (isOnline) {
     // 1. If Online, send directly to Appwrite
     try {
+      console.log(`📤 Online mode: Sending to Appwrite (DB: ${AppwriteConfig.databaseId}, Col: ${collectionId})`);
       const response = await databases.createDocument(
         AppwriteConfig.databaseId,
         collectionId,
         ID.unique(),
         data
       );
+      console.log(`✅ Online save successful`);
       return { success: true, mode: "online", data: response };
     } catch (error) {
-      console.error("Online save failed, switching to offline...", error);
+      console.error("⚠️ Online save failed, switching to offline...", error);
       // If API fails (e.g., weak signal), fall back to offline logic below
     }
   }

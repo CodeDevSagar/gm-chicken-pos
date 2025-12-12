@@ -10,8 +10,8 @@ const client = new Client()
 // Your Database and Collection IDs
 export const AppwriteConfig = {
     databaseId: '691df7bc000445abd06a',
-    usersCollectionId: 'users',
-    productsCollectionId: 'products',
+    userCollectionId: 'users',
+    productCollectionId: 'products',
     salesCollectionId: 'sales',
     purchasesCollectionId: 'purchases',
     settingsCollectionId: 'settings',
